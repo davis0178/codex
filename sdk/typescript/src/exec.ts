@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import { createRequire } from "node:module";
 
 import type { CodexConfigObject, CodexConfigValue } from "./codexOptions";
@@ -228,15 +227,27 @@ export class CodexExec {
       },
     );
 
-    const rl = readline.createInterface({
-      input: child.stdout,
-      crlfDelay: Infinity,
-    });
+    // Frame the CLI JSONL output on literal newlines instead of readline:
+    // readline treats U+2028 and U+2029 as line separators (Node 24+ and Bun),
+    // but both are legal inside JSON strings, so a tool event containing them
+    // would be split into fragments that fail to parse.
+    child.stdout.setEncoding("utf8");
 
     try {
-      for await (const line of rl) {
-        // `line` is a string (Node sets default encoding to utf8 for readline)
-        yield line as string;
+      let pending = "";
+      for await (const chunk of child.stdout) {
+        pending += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        let newlineIndex: number;
+        while ((newlineIndex = pending.indexOf("\n")) !== -1) {
+          const line = pending.slice(0, newlineIndex);
+          pending = pending.slice(newlineIndex + 1);
+          // Match readline's CRLF handling: strip a trailing \r from \r\n.
+          yield line.endsWith("\r") ? line.slice(0, -1) : line;
+        }
+      }
+      // readline emits a final line when the input doesn't end with a newline.
+      if (pending.length > 0) {
+        yield pending;
       }
 
       if (spawnError) throw spawnError;
@@ -247,7 +258,6 @@ export class CodexExec {
         throw new Error(`Codex Exec exited with ${detail}: ${stderrBuffer.toString("utf8")}`);
       }
     } finally {
-      rl.close();
       child.removeAllListeners();
       try {
         if (!child.killed) child.kill();

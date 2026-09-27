@@ -362,4 +362,36 @@ describe("CodexExec", () => {
 
     expect(env).toEqual({ Path: `${pathDir}${path.delimiter}C\\Windows` });
   });
+
+  it("keeps JSON lines intact when they contain U+2028/U+2029", async () => {
+    const { CodexExec } = await import("../src/exec");
+    spawnMock.mockClear();
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child as unknown as child_process.ChildProcess);
+
+    setImmediate(() => {
+      const lines = [
+        JSON.stringify({ type: "tool_result", text: "before\u2028after\u2029end" }),
+        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }),
+      ];
+      child.stdout.write(lines.join("\n") + "\n");
+      child.stdout.end();
+      child.stderr.end();
+      child.emit("exit", 0, null);
+    });
+
+    const exec = new CodexExec("codex");
+    const yielded: string[] = [];
+    for await (const line of exec.run({ input: "hi" })) {
+      yielded.push(line);
+    }
+
+    expect(yielded).toHaveLength(2);
+    const first = yielded.at(0);
+    expect(first).toBeDefined();
+    expect(JSON.parse(first as string)).toEqual({
+      type: "tool_result",
+      text: "before\u2028after\u2029end",
+    });
+  });
 });
